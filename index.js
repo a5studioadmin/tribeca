@@ -54,72 +54,73 @@ async function initPuppeteer() {
 async function fetchArticles(website) {
   const {
     baseUrl,
+    basePagePaginationSelector,
     detailPageTitleSelector,
     detailPageContentSelector,
     detailPageImageSelector,
-    templateName,
   } = website;
-  console.log("Beginning scraping of", baseUrl);
-  try {
-    await page.goto(baseUrl, { waitUntil: "networkidle0" });
-    let articleLinks = await page.$$eval(
-      website.basePageAnchorSelector,
-      (links) => {
-        return links.map((link) => {
-          return {
-            href: link.href,
-            title: link.title,
-          };
-        });
-      }
-    );
+  let articleLinks = [];
+  await page.goto(baseUrl, { waitUntil: "networkidle0" });
+  do {
+    console.log(`Scraping ${page.url()} for articles`);
+    const paginationSelector = basePagePaginationSelector
+      ? await page.$(basePagePaginationSelector)
+      : "";
+    const links = await page.$$eval(website.basePageAnchorSelector, (links) => {
+      return links.map((link) => {
+        return {
+          href: link.href,
+          title: link.title,
+        };
+      });
+    });
+    articleLinks = [...articleLinks, ...links];
+    if (!basePagePaginationSelector) {
+      console.log(`Skipping pagination for ${baseUrl}`);
+      break;
+    } else if (!paginationSelector) {
+      console.log(`Could not find pagination element for ${baseUrl}`);
+      break;
+    } else {
+      console.log("Navigating to next page");
+      await paginationSelector.click();
+      await page.waitForNavigation({ waitUntil: "networkidle0" });
+    }
+  } while (articleLinks?.length <= MAX_NUMBER_OF_ARTICLES_PER_WEBSITE);
 
-    articleLinks = articleLinks.slice(0, MAX_NUMBER_OF_ARTICLES_PER_WEBSITE);
-    console.log(`Found ${articleLinks.length} article(s)`);
+  articleLinks = articleLinks.slice(0, MAX_NUMBER_OF_ARTICLES_PER_WEBSITE);
+  console.log(`Scraped ${articleLinks.length} article(s) from ${baseUrl}`);
 
-    let index = 0;
-    for (const link of articleLinks) {
-      await page.goto(link.href, { waitUntil: "networkidle0" });
-      console.log("Fetching content for", link.title);
-      if (index === 0) {
-        const content = await page.content();
-        await fs.writeFile(`./templates/${templateName}.html`, content);
-        console.log("Saved article detail template to", `${templateName}.html`);
-      }
-      index++;
-      const articleContent = await page.evaluate(
-        (
-          detailPageTitleSelector,
-          detailPageContentSelector,
-          detailPageImageSelector,
-          href
-        ) => {
-          const title = document.querySelector(
-            detailPageTitleSelector
-          ).innerText;
-          const content = document.querySelector(
-            detailPageContentSelector
-          ).innerText;
-          const image = document.querySelector(detailPageImageSelector).src;
-          return { title, image, content, href };
-        },
+  for (const link of articleLinks) {
+    await page.goto(link.href, { waitUntil: "networkidle0" });
+    console.log("Fetching content for", link.title);
+    const articleContent = await page.evaluate(
+      (
         detailPageTitleSelector,
         detailPageContentSelector,
         detailPageImageSelector,
-        link.href
-      );
-      website.articles.push(articleContent);
-    }
-  } catch (error) {
-    console.error("Error during scraping:", error);
+        href
+      ) => {
+        const title = document.querySelector(detailPageTitleSelector).innerText;
+        const content = document.querySelector(
+          detailPageContentSelector
+        ).innerText;
+        const image = document.querySelector(detailPageImageSelector).src;
+        return { title, image, content, href };
+      },
+      detailPageTitleSelector,
+      detailPageContentSelector,
+      detailPageImageSelector,
+      link.href
+    );
+    website.articles.push(articleContent);
   }
 }
 
 async function fetchAllArticles() {
-  const promises = WEBSITES.map(async (website) => {
-    return await fetchArticles(website);
-  });
-  await Promise.all(promises);
+  for (const website of WEBSITES) {
+    await fetchArticles(website);
+  }
   console.log(`Finished scraping of ${WEBSITES.length} website(s)!`);
   await fs.writeFile(
     ORIGINAL_ARTICLE_CONTENT_FILENAME,
@@ -137,10 +138,18 @@ async function generateAlteredArticleContent() {
   );
   for (const website of WEBSITES) {
     for (const article of website.articles) {
-      console.log("Generating perspective for", article.title);
+      console.log(
+        `Generating "${website.personality}" perspective for`,
+        article.title
+      );
       const response = await ollama.chat({
         model: OLLAMA_MODEL,
-        messages: [{ role: "user", content: article.content }],
+        messages: [
+          {
+            role: "user",
+            content: `${website.personality}. ${article.content}`,
+          },
+        ],
       });
       const { title, content } = splitTitleAndContent(response.message.content);
       article.title = removeSurroundingQuotes(title);
@@ -219,6 +228,7 @@ async function main() {
     console.warn(error);
   } finally {
     if (browser?.close) {
+      console.log("Closing browser");
       await browser.close();
     }
   }
