@@ -3,14 +3,13 @@ function toSnakeCase(str) {
   return cleanedString.replace(/\s+/g, "_").toLowerCase();
 }
 
-function removeSurroundingQuotes(str) {
-  if (
-    str.length >= 2 &&
-    ((str[0] === '"' && str[str.length - 1] === '"') ||
-      (str[0] === "'" && str[str.length - 1] === "'"))
-  ) {
-    return str.substring(1, str.length - 1);
+function removeSpecialCharacters(str) {
+  // Remove surrounding double quotes
+  if (str.length >= 2 && str[0] === '"' && str[str.length - 1] === '"') {
+    str = str.substring(1, str.length - 1);
   }
+  // Remove leading and trailing "**"
+  str = str.replace(/^\*\*|\*\*$/g, "");
   return str;
 }
 
@@ -25,6 +24,53 @@ function getFormattedDate() {
   return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`;
 }
 
+function formatDay(day) {
+  if (day > 3 && day < 21) return day + "th"; // for most numbers
+  switch (day % 10) {
+    case 1:
+      return day + "st";
+    case 2:
+      return day + "nd";
+    case 3:
+      return day + "rd";
+    default:
+      return day + "th";
+  }
+}
+
+function formatDate(date) {
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  const day = date.getDate();
+  const month = monthNames[date.getMonth()];
+  const year = date.getFullYear();
+
+  return `${month} ${formatDay(day)}, ${year}`;
+}
+
+function generateRandomRecentDate() {
+  const now = new Date();
+  const threeMonthsAgo = new Date(new Date().setMonth(now.getMonth() - 3));
+  const randomTime =
+    Math.random() * (now.getTime() - threeMonthsAgo.getTime()) +
+    threeMonthsAgo.getTime();
+  const randomDate = new Date(randomTime);
+
+  return formatDate(randomDate);
+}
+
 function splitTitleAndContent(text) {
   const parts = text.split("\n");
   const title = parts.shift().trim();
@@ -34,7 +80,8 @@ function splitTitleAndContent(text) {
 
 module.exports = {
   toSnakeCase,
-  removeSurroundingQuotes,
+  removeSpecialCharacters,
   getFormattedDate,
   splitTitleAndContent,
+  generateRandomRecentDate,
 };
