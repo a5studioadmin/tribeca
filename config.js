@@ -7,8 +7,9 @@ const ALTERED_CONTENT_MAX_PARAGRAPHS = 7;
 const ORIGINAL_ARTICLE_CONTENT_FILENAME = "./data/articles_original.json";
 const ALTERED_ARTICLE_CONTENT_FILENAME = "./data/articles_altered.json";
 const DEFAULT_PAGE_TIMEOUT = 10 * 1000;
+const NUMBER_OF_ARTICLES_PER_SOURCE = 1;
 const SAVE_RAW_HTML = true;
-const DEBUG = false;
+const DEBUG = true;
 const USE_PERSISTED_DATA = false;
 
 const TAGS = ["HOME", "WEATHER", "SPORTS", "OPINIONS", "WATCH", "OBITUARIES"];
@@ -20,6 +21,9 @@ const AUTHORS = authors.map((name) => {
   };
 });
 
+// Parent company with many compatible local news sites
+// https://gray.tv/companies#ourmarkets
+
 // Additional model configuration options
 // https://github.com/ollama/ollama/blob/main/docs/modelfile.md#valid-parameters-and-values
 
@@ -28,7 +32,7 @@ const WRITER_PERSONALITY_REPUBLICAN =
 const WRITER_PERSONALITY_DEMOCRAT =
   "You are a hardcore, right leaning democrat that tries to advance their agenda through their news reporting";
 
-const SYSTEM_PROMPT = `You will be supplied text containing a specific writer personality in the first sentence, followed by the content of a random news article, and you are to re-write the article from the perspective of your believes, including an article title that you should add to the first sentence of your output. If you perceive the article as a national news story (as opposed to a local news story), you should more strongly emphasize your beliefs through your writing. To summarize, your output should be a newline-delimited string of text with the first sentence as an article title that you generated (which should should be a short, one-sentence news headline length that has a max character length of ${HEADLINE_MAX_CHARACTERS}, and should not contain any asterisks or quotations), followed by the article the content you generated (which should be exactly ${ALTERED_CONTENT_MAX_PARAGRAPHS} paragraphs in length). You should respond with response only.`;
+const SYSTEM_PROMPT = `You will be supplied text containing a specific writer personality in the first sentence, followed by the content of a random news article, and you are to re-write the article from the perspective of your beliefs, including an article title that you should add to the first sentence of your output. If you perceive the article as a national news story (as opposed to a local news story), you should more strongly emphasize your beliefs through your writing. To summarize, your output should be a newline-delimited string of text with the first sentence as an article title that you generated (which should be a short, one-sentence news headline length that has a max character length of ${HEADLINE_MAX_CHARACTERS}, and should not contain any asterisks or quotations), followed by the article the content you generated (which should be exactly ${ALTERED_CONTENT_MAX_PARAGRAPHS} paragraphs in length). You should respond with response only.`;
 const OLLAMA_MODEL = "llama3:latest";
 
 const MODELFILE = `
@@ -106,13 +110,42 @@ const TEMPLATES = [
     templatePageTagSelector:
       "ul#menu-td-demo-header-menu-3 > li > a > div.tdb-menu-item-text",
   },
+  {
+    baseUrl:
+      "https://demo.tagdiv.com/newspaper_downtown_pro/2022/03/08/td-post-customer-engagement-marketing-new-strategy-for-the-economy/",
+    websiteName: "news_downtown_pro",
+    elementsToHide: [
+      "a.td-right-demos-button",
+      "a.tdb-entry-category",
+      "div.tdm_block.td_block_wrap.tdm_block_inline_text.tdi_159.td-pb-border-top.td_block_template_1",
+      "div.td_block_wrap.td_flex_block_1.tdi_160.td-pb-border-top.td_block_template_1.td_flex_block",
+      "div.td_block_wrap.td-a-rec.td-a-rec-id-custom-spot.td-a-rec-img.tdi_161.td_block_template_1",
+      "div.vc_column.tdi_135.wpb_column.vc_column_container.tdc-column.td-pb-span3.td-is-sticky",
+    ],
+    elementsToDelete: [
+      "#tdi_29",
+      "a.td_spot_img_all",
+      "div.td_block_wrap.tdb_breadcrumbs.tdi_116.td-pb-border-top.td_block_template_1.tdb-breadcrumbs",
+      // "div.vc_column.tdi_135.wpb_column.vc_column_container.tdc-column.td-pb-span3.td-is-sticky",
+      // "div.vc_column.tdi_149.wpb_column.vc_column_container.tdc-column.td-pb-span3.td-is-sticky",
+      "div.vc_row_inner.tdi_151.vc_row.vc_inner.wpb_row.td-pb-row",
+    ],
+    templatePageDateSelector: "time.entry-date.updated.td-module-date",
+    templatePageAuthorNameSelector: "a.tdb-author-name",
+    templatePageAuthorImageSelectors: "",
+    templatePageTitleSelector: "h1.tdb-title-text",
+    templatePageImageSelector: "div.tdb-featured-image-bg",
+    templatePageContentSelector: "div.td_block_wrap.tdb_single_content",
+    templatePageTagSelector:
+      "ul#menu-td-demo-header-menu-2 > li > a > div.tdb-menu-item-text",
+  },
 ];
 
 let WEBSITES = [
   {
     baseUrl: "https://www.wlns.com/news/local-news/",
     websiteName: "wlns_local",
-    maxNumberOfArticles: 1,
+    maxNumberOfArticles: NUMBER_OF_ARTICLES_PER_SOURCE,
     template: TEMPLATES[0],
     personality: WRITER_PERSONALITY_REPUBLICAN,
     basePageAnchorSelector: "a.article-list__article-link",
@@ -125,7 +158,7 @@ let WEBSITES = [
   {
     baseUrl: "https://www.13abc.com/news/",
     websiteName: "whvg_local",
-    maxNumberOfArticles: 1, // 25
+    maxNumberOfArticles: NUMBER_OF_ARTICLES_PER_SOURCE,
     template: TEMPLATES[1],
     personality: WRITER_PERSONALITY_REPUBLICAN,
     basePageAnchorSelector: "h4.headline > a.text-reset",
@@ -139,7 +172,7 @@ let WEBSITES = [
   {
     baseUrl: "https://whnynews.com/category/news/national/",
     websiteName: "whnynews_national",
-    maxNumberOfArticles: 1,
+    maxNumberOfArticles: NUMBER_OF_ARTICLES_PER_SOURCE,
     template: TEMPLATES[2],
     personality: WRITER_PERSONALITY_DEMOCRAT,
     basePageAnchorSelector: "a.td-image-wrap",
