@@ -1,4 +1,4 @@
-[
+const authors = [
   "John Doe",
   "Jane Smith",
   "Emily Johnson",
@@ -98,5 +98,12 @@
   "Mariah Cox",
   "Bruce Ward",
   "Olivia Morris",
-  "Carlos Flores"
-]
+  "Carlos Flores",
+].map((name) => {
+  return {
+    name,
+    image: "https://source.unsplash.com/random/300x300/?face",
+  };
+});
+
+export default authors;

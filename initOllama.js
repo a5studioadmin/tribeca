@@ -1,5 +1,6 @@
-const { Ollama } = require("ollama");
-const { OLLAMA_MODEL, MODELFILE } = require("./config");
+import { Ollama } from "ollama";
+import { MODELFILE, OLLAMA_MODEL } from "./config.js";
+import chalk from "chalk";
 
 async function initOllama() {
   try {
@@ -14,15 +15,13 @@ async function initOllama() {
       "Available ollama models:",
       response.models.map((model) => model.name)
     );
-    console.log(`Using ${OLLAMA_MODEL}`);
+    console.log(chalk.bold.green(`Using ${OLLAMA_MODEL}`));
     return ollama;
-  } catch {
+  } catch (error) {
     throw new Error(
-      "Unable to start llama3. Are you sure your ollama server is running?"
+      `Unable to start llama3. Are you sure your ollama server is running? (${error.message})`
     );
   }
 }
 
-module.exports = {
-  initOllama,
-};
+export { initOllama };

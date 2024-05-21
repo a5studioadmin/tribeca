@@ -1,44 +1,60 @@
 /* eslint-disable no-async-promise-executor */
-const fs = require("fs").promises;
-const {
-  toSnakeCase,
+import { promises as fs } from "fs";
+import {
   removeSpecialCharacters,
   getFormattedDate,
   splitTitleAndContent,
   generateRandomRecentDate,
-} = require("./helpers");
-const { initPuppeteer } = require("./initPuppeteer");
-const { initOllama } = require("./initOllama");
-const {
+  mixArticles,
+  getNationalNewsArticles,
+  generatePrompt,
+} from "./helpers.js";
+import { initPuppeteer } from "./initPuppeteer.js";
+import { initOllama } from "./initOllama.js";
+import {
   SCREENSHOT_FILETYPE,
   ORIGINAL_ARTICLE_CONTENT_FILENAME,
   ALTERED_ARTICLE_CONTENT_FILENAME,
   OLLAMA_MODEL,
   USE_PERSISTED_DATA,
   SAVE_RAW_HTML,
-  AUTHORS,
   TAGS,
-} = require("./config");
-// mutable because sometimes we might want to use persisted data
-// during local development
-let { WEBSITES } = require("./config");
+  DEFAULT_PAGE_TIMEOUT,
+  VIEWPORT_WIDTH,
+  VIEWPORT_HEIGHT,
+  getWebsites,
+  setWebsites,
+  REWRITE_MAX_AMOUNT_OF_ARTICLES,
+} from "./config.js";
+import authors from "./authors.js";
+import chalk from "chalk";
+
+const error = chalk.bold.red;
+const info = chalk.bold.blue;
+const warning = chalk.hex("#FFA500");
+const success = chalk.bold.green;
 
 let page, browser, ollama;
+let totalLocalArticlesFound = 0;
+let totalNationalArticlesFound = 0;
 
 async function fetchArticles(website) {
   const {
     baseUrl,
     articles,
+    nationalNewsSource = false,
     basePageAnchorSelector,
     basePagePaginationSelector,
     detailPageTitleSelector,
     detailPageContentSelector,
     detailPageImageSelector,
     maxNumberOfArticles,
+    onlyReadTopLevelTagFromDetail,
   } = website;
   let articleLinks = [];
   const articleLinksMap = {};
-  console.log(`Scraping ${baseUrl} for articles`);
+  console.log("\n");
+  console.log(info(`Scraping ${baseUrl} for articles`));
   try {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     do {
@@ -46,32 +62,50 @@ async function fetchArticles(website) {
         ? await page.$(basePagePaginationSelector)
         : "";
       const links = await page.$$eval(basePageAnchorSelector, (links) => {
-        return links.map((link) => {
-          return {
-            href: link.href,
-          };
-        });
+        return links
+          .filter((e) => e.checkVisibility())
+          .map((link) => {
+            return {
+              href: link.href,
+            };
+          });
       });
       const previousCount = Object.keys(articleLinksMap);
       links.forEach((link) => {
         articleLinksMap[link.href] = link;
       });
       const newCount = Object.keys(articleLinksMap);
-      if (previousCount === newCount) {
+      if (
+        !previousCount.length &&
+        previousCount.length &&
+        previousCount.length === newCount.length
+      ) {
         console.log(
-          "Finish scraping because after pagination, no new articles were found."
+          success(
+            "Finish scraping because after pagination, no new articles were found."
+          )
         );
-      } else if (Object.keys(articleLinksMap)?.length >= maxNumberOfArticles) {
+        break;
+      } else if (newCount.length >= maxNumberOfArticles) {
         console.log(
-          `Finish scraping because the max amount of articles (${maxNumberOfArticles}) have already been scraped.`
+          `Finish scraping because ${newCount.length} article(s) were scraped, which is equal or greater to the max number of articles (${maxNumberOfArticles})`
         );
+        break;
       } else {
-        console.log(`Found ${links.length} articles(s)`);
+        if (newCount.length) {
+          console.log(`Found ${newCount.length} articles(s)`);
+        } else {
+          console.log(
+            error(`Did not find any articles to scrape on ${baseUrl}`)
+          );
+        }
         if (!basePagePaginationSelector) {
           console.log(`Skipping pagination for ${baseUrl}`);
           break;
         } else if (!paginationSelector) {
-          console.log(`Could not find pagination element for ${baseUrl}`);
+          console.log(
+            error(`Could not find pagination element for ${baseUrl}`)
+          );
           break;
         } else {
           console.log("Navigating to next page");
@@ -80,7 +114,9 @@ async function fetchArticles(website) {
             .waitForNavigation({ waitUntil: "networkidle2" })
             .catch(() => {
               console.log(
-                "Unable to paginate, but will take another look to see if new articles were loaded on the same page"
+                warning(
+                  "Unable to paginate, but will take another look to see if new articles were loaded on the same page"
+                )
               );
             });
           console.log(`Scraping ${page.url()} for articles`);
@@ -97,9 +133,29 @@ async function fetchArticles(website) {
     );
     articleLinks = articleLinks.slice(0, maxNumberOfArticles);
 
-    console.log(`Fetching content for ${articleLinks.length} article(s)`);
+    console.log(
+      `Fetching content for ${articleLinks.length} ${
+        nationalNewsSource ? "national news" : "local news"
+      } article(s)`
+    );
     for (const link of articleLinks) {
       try {
+        await page.close();
+        page = await browser.newPage();
+        page.setDefaultNavigationTimeout(DEFAULT_PAGE_TIMEOUT);
+        page.on("console", (message) => {
+          if (message.text().includes("PAGE LOG")) {
+            if (message.text().toUpperCase().includes("ERROR")) {
+              console.log(error(message.text()));
+            } else {
+              console.log(info(message.text()));
+            }
+          }
+        });
+        await page.setViewport({
+          width: VIEWPORT_WIDTH,
+          height: VIEWPORT_HEIGHT,
+        });
         await page.goto(link.href, { waitUntil: "domcontentloaded" });
         try {
           await page.waitForSelector(detailPageImageSelector, {
@@ -114,14 +170,23 @@ async function fetchArticles(website) {
             detailPageTitleSelector,
             detailPageContentSelector,
             detailPageImageSelector,
+            onlyReadTopLevelTagFromDetail,
             href
           ) => {
             const title = document.querySelector(
               detailPageTitleSelector
             ).innerText;
-            const content = document.querySelector(
-              detailPageContentSelector
-            ).innerText;
+            let content = document.querySelector(detailPageContentSelector);
+            if (onlyReadTopLevelTagFromDetail) {
+              const topLevelParagraphs = Array.from(content.childNodes || [])
+                .filter(
+                  (node) => node.nodeName === onlyReadTopLevelTagFromDetail
+                )
+                .map((tag) => tag.innerText);
+              content = topLevelParagraphs.join(" ");
+            } else {
+              content = content.innerText;
+            }
             const imageSelector = document.querySelector(
               detailPageImageSelector
             );
@@ -133,6 +198,7 @@ async function fetchArticles(website) {
           detailPageTitleSelector,
           detailPageContentSelector,
           detailPageImageSelector,
+          onlyReadTopLevelTagFromDetail,
           link.href
         );
         if (!articleContent.image) {
@@ -143,8 +209,10 @@ async function fetchArticles(website) {
               (elements) => elements.map((element) => element.content)
             );
             articleContent.image = ogImage?.[0];
-          } catch (error) {
-            console.log("Could not pull open graph image", error?.message);
+          } catch (e) {
+            console.log(
+              error(`Could not pull open graph image: ${e?.message}`)
+            );
           }
         }
         if (
@@ -153,295 +221,487 @@ async function fetchArticles(website) {
           articleContent.content
         ) {
           console.log("Fetched content for", articleContent.href);
-          articles.push(articleContent);
+          articles.push({
+            ...articleContent,
+            nationalNews: nationalNewsSource,
+          });
         } else {
           if (!articleContent.image) {
             console.log(
-              `Discarding article because image was not found (${articleContent.href})`
+              error(
+                `Discarding article because image was not found (${articleContent.href})`
+              )
             );
           } else if (!articleContent.title) {
             console.log(
-              `Discarding article because title was not found (${articleContent.href})`
+              error(
+                `Discarding article because title was not found (${articleContent.href})`
+              )
             );
           } else if (!articleContent.content) {
             console.log(
-              `Discarding article because content was not found (${articleContent.href})`
+              error(
+                `Discarding article because content was not found (${articleContent.href})`
+              )
             );
           }
         }
-      } catch (error) {
-        console.log(`Unable to fetch ${link.href}`, error.message);
+      } catch (e) {
+        console.log(error(`Unable to fetch ${link.href}: ${e.message}`));
       }
     }
-    console.log(`Fetched content for ${articles.length} article(s)!`);
-  } catch (error) {
-    console.log(`Unable to fetch ${baseUrl}`, error.message);
+    console.log(success(`Fetched content for ${articles.length} article(s)!`));
+  } catch (e) {
+    console.log(error(`Unable to fetch ${baseUrl}: ${e.message}`));
   }
+  return articles.length;
 }
 
 async function fetchAllArticles() {
-  for (const website of WEBSITES) {
-    await fetchArticles(website);
+  const websites = getWebsites();
+  for (const website of websites) {
+    const numberOfArticlesFound = await fetchArticles(website);
+    if (website.nationalNewsSource) {
+      totalNationalArticlesFound += numberOfArticlesFound;
+    } else {
+      totalLocalArticlesFound += numberOfArticlesFound;
+    }
   }
-  console.log(`Finished scraping of ${WEBSITES.length} website(s)!`);
+  const totalArticlesFound =
+    totalNationalArticlesFound + totalLocalArticlesFound;
+  console.log("\n");
+  console.log(
+    success(
+      `Finished scraping of ${totalArticlesFound} article(s) (including ${totalNationalArticlesFound} national news articles) from ${websites.length} website(s), and saved content to ${ORIGINAL_ARTICLE_CONTENT_FILENAME}`
+    )
+  );
   await fs.writeFile(
     ORIGINAL_ARTICLE_CONTENT_FILENAME,
-    JSON.stringify(WEBSITES),
+    JSON.stringify(getWebsites()),
     "utf8"
-  );
-  console.log(
-    `All article content has been saved to ${ORIGINAL_ARTICLE_CONTENT_FILENAME}`
   );
 }
 
 async function generateAlteredArticleContent() {
+  console.log("\n");
   console.log(
-    "Generating perspective for all article(s) based on the system prompt"
+    info("Generating perspective for all article(s) based on the system prompt")
   );
-  for (const website of WEBSITES) {
+  for (const website of getWebsites()) {
     for (const article of website.articles) {
-      console.log(
-        `Generating "${website.personality}" perspective for "${article.title}"`
-      );
+      console.log(`Generating perspective for ${article.href}`);
       const response = await ollama.chat({
         model: OLLAMA_MODEL,
         messages: [
           {
             role: "user",
-            content: `${website.personality}. ${article.content}`,
+            content: generatePrompt(website.personality, article.content),
           },
         ],
       });
       const { title, content } = splitTitleAndContent(response.message.content);
       article.title = removeSpecialCharacters(title);
       article.content = content;
+      console.log(article);
     }
   }
   await fs.writeFile(
     ALTERED_ARTICLE_CONTENT_FILENAME,
-    JSON.stringify(WEBSITES),
+    JSON.stringify(getWebsites()),
     "utf8"
   );
   console.log(
-    `All newly altered article content for ${WEBSITES.length} website(s) has been saved to ${ALTERED_ARTICLE_CONTENT_FILENAME}.`
+    success(
+      `All newly altered article content for ${
+        getWebsites().length
+      } website(s) has been saved to ${ALTERED_ARTICLE_CONTENT_FILENAME}.`
+    )
   );
 }
 
 async function rewriteArticlesUsingAlteredContent() {
-  console.log("Re-writing article(s) using altered content");
+  console.log("\n");
+  console.log(info("Re-writing article(s) using altered content"));
   const formattedDate = getFormattedDate();
-  for (const website of WEBSITES) {
-    const directory = `./screenshots/${formattedDate}/${website.websiteName}`;
-    const htmlDirectory = `${directory}/html`;
-    await fs.mkdir(directory, { recursive: true });
-    if (SAVE_RAW_HTML) {
-      await fs.mkdir(htmlDirectory, { recursive: true });
-    }
-    console.log("Created screenshots directory", directory);
-    await page.goto(website.template.baseUrl, {
-      waitUntil: "networkidle2",
-    });
-    await page.waitForSelector(website.template.templatePageImageSelector, {
-      visible: true,
-    });
-    console.log(`Loaded ${website.template.websiteName} template!`);
-    if ((website.template.elementsToClick || []).length) {
-      for (const index in website.template.elementsToClick) {
-        const selector = website.template.elementsToClick[index];
-        try {
-          await page.waitForSelector(selector, {
-            visible: true,
-            timeout: 3000,
-          });
-          await page.click(selector);
-          console.log("PAGE LOG: Clicked", selector);
-        } catch (error) {
-          console.log(error?.message || `Could not click ${selector}`);
+  for (const website of getWebsites()) {
+    if (website.nationalNewsSource) {
+      console.log(
+        `Skipping ${website.websiteName} because it is a national new source`
+      );
+    } else {
+      const directory = `./screenshots/${formattedDate}/${website.websiteName}`;
+      const htmlDirectory = `${directory}/html`;
+      await fs.mkdir(directory, { recursive: true });
+      if (SAVE_RAW_HTML) {
+        await fs.mkdir(htmlDirectory, { recursive: true });
+      }
+      console.log(`Creating article(s) for ${website.websiteName}`);
+      await page.goto(website.template.baseUrl, {
+        waitUntil: "networkidle2",
+      });
+      await page.waitForSelector(website.template.templatePageImageSelector, {
+        visible: true,
+      });
+      if ((website.template.elementsToClick || []).length) {
+        for (const index in website.template.elementsToClick) {
+          const selector = website.template.elementsToClick[index];
+          try {
+            await page.waitForSelector(selector, {
+              visible: true,
+              timeout: 3000,
+            });
+            await page.click(selector);
+            console.log(info(`PAGE LOG: Clicked ${selector}`));
+          } catch (e) {
+            console.log(error(e?.message || `Could not click ${selector}`));
+          }
         }
       }
-    }
-    for (const article of website.articles) {
-      console.log("Re-writing", article.title);
-      // some pages have an image fade in effect that we need to wait for
-      // clear local storage
-      const authorImage = AUTHORS[Math.floor(Math.random() * AUTHORS.length)];
-      const updates = [
-        {
-          selector: website.template.templatePageTitleSelector,
-          newContent: article.title,
-        },
-        {
-          selector: website.template.templatePageContentSelector,
-          newContent: article.content,
-        },
-        {
-          selector: website.template.templatePageImageSelector,
-          newContent: article.image,
-          swapImage: true,
-        },
-        {
-          selector: website.template.templatePageAuthorNameSelector,
-          selectAll: true,
-          newContent: AUTHORS[Math.floor(Math.random() * AUTHORS.length)].name,
-        },
-        {
-          selector: website.template.templatePageDateSelector,
-          newContent: generateRandomRecentDate(),
-          selectAll: true,
-        },
-        {
-          selector: website.template.templatePageTagSelector,
-          replaceTags: true,
-          tags: JSON.stringify(TAGS),
-        },
-        ...(website.template.templatePageAuthorImageSelectors || []).map(
-          (element) => {
+      if (website.articles.length === 0) {
+        console.log(error(`No articles were saved for ${website.websiteName}`));
+      }
+      const combinedArticles = mixArticles(
+        website.articles,
+        getNationalNewsArticles(),
+        REWRITE_MAX_AMOUNT_OF_ARTICLES
+      );
+      let index = 1;
+      for (const article of combinedArticles) {
+        console.log("\n");
+        console.log(`Re-writing ${article.href}`);
+        // some pages have an image fade in effect that we need to wait for
+        // clear local storage
+        const authorImage = authors[Math.floor(Math.random() * authors.length)];
+        const updates = [
+          {
+            selector: website.template.templatePageTitleSelector,
+            newContent: article.title,
+          },
+          {
+            selector: website.template.templatePageContentSelector,
+            newContent: article.content,
+          },
+          {
+            selector: website.template.templatePageImageSelector,
+            newContent: article.image,
+            swapImage: true,
+          },
+          {
+            selector: website.template.templatePagePrimaryColorSelector,
+            newContent: website.primaryBrandColor,
+            swapPrimaryColor: true,
+          },
+          {
+            selector: website.template.templatePageAuthorNameSelector,
+            selectAll: true,
+            newContent:
+              authors[Math.floor(Math.random() * authors.length)].name,
+          },
+          {
+            selector: website.template.templatePageDateSelector,
+            newContent: generateRandomRecentDate(),
+            selectAll: true,
+          },
+          {
+            selector: website.template.templatePageTagSelector,
+            replaceTags: true,
+            tags: JSON.stringify(TAGS),
+          },
+          {
+            selector: website.template.templatePageShortNameSelector,
+            newContent: website.websiteShortName,
+            replaceWebsiteShortName: true,
+          },
+          {
+            selector: website.template.templatePageNameSelector,
+            newContent: website.websiteName,
+            replaceWebsiteName: true,
+          },
+          {
+            selector: website.template.templatePageNameNewsFromSelector,
+            newContent: website.websiteName,
+            replaceWebsiteNewsFromName: true,
+          },
+          ...(website.template.backgroundColorsToOverwrite || []).map(
+            (element) => {
+              return {
+                selector: element,
+                newContent: website.primaryBrandColor,
+                overwriteBackgroundColor: true,
+              };
+            }
+          ),
+          ...(website.template.colorsToOverwrite || []).map((element) => {
             return {
               selector: element,
-              newContent: authorImage.image,
-              swapImage: true,
+              newContent: website.primaryBrandColor,
+              overwriteColor: true,
             };
-          }
-        ),
-        ...(website.template.elementsToHide || []).map((element) => {
-          return {
-            selector: element,
-            hideElement: true,
-          };
-        }),
-        ...(website.template.elementsToDelete || []).map((element) => {
-          return {
-            selector: element,
-            deleteElement: true,
-          };
-        }),
-      ];
-      await page.evaluate((updates) => {
-        return Promise.all(
-          updates.map((update) => {
-            return new Promise(async (resolve, reject) => {
-              if (update.selector) {
-                const element = document.querySelector(update.selector);
-                if (element) {
-                  if (update.swapImage) {
-                    if (update.selector.includes("div")) {
-                      element.style.background = `url("${update.newContent}")`;
-                      element.style.backgroundImage = `url("${update.newContent}")`;
-                      element.style.backgroundSize = "cover";
-                      element.style.backgroundPosition = "center";
-                      // As background images don't fire load events, consider a different method to ensure loading, or skip synchronization.
+          }),
+          ...(website.template.templatePageAuthorImageSelectors || []).map(
+            (element) => {
+              return {
+                selector: element,
+                newContent: authorImage.image,
+                swapImage: true,
+              };
+            }
+          ),
+          ...(website.template.elementsToHide || []).map((element) => {
+            return {
+              selector: element,
+              hideElement: true,
+            };
+          }),
+          ...(website.template.elementsToDelete || []).map((element) => {
+            return {
+              selector: element,
+              deleteElement: true,
+            };
+          }),
+          ...(website.template.classNamesToRewrite || []).map(
+            ({ selector, className }) => {
+              return {
+                selector,
+                className,
+                rewriteClassName: true,
+              };
+            }
+          ),
+          ...(website.template.selectorStyles || []).map(
+            ({ selector, styles }) => {
+              return {
+                selector,
+                styles,
+                applyStyles: true,
+              };
+            }
+          ),
+        ];
+        await page.evaluate((updates) => {
+          return Promise.all(
+            updates.map((update) => {
+              return new Promise(async (resolve, reject) => {
+                try {
+                  if (update.selector) {
+                    if (update.swapPrimaryColor) {
                       console.log(
-                        `PAGE LOG: Poor support for background images, so will wait 1 second for load.`
+                        `PAGE LOG: Replacing primary color (${update.selector}) with ${update.newContent}`
                       );
-                      setTimeout(() => resolve(), 1000);
+                      document.documentElement.style.setProperty(
+                        update.selector,
+                        update.newContent
+                      );
+                      resolve();
                     } else {
-                      // Clear existing srcset to ensure image loads correctly
-                      element.srcset = "";
-                      element.src = update.newContent;
-                      element.style.objectFit = "cover";
+                      const element = document.querySelector(update.selector);
+                      if (element) {
+                        if (update.swapImage) {
+                          if (update.selector.includes("div")) {
+                            element.style.background = `url("${update.newContent}")`;
+                            element.style.backgroundImage = `url("${update.newContent}")`;
+                            element.style.backgroundSize = "cover";
+                            element.style.backgroundPosition = "center";
+                            // As background images don't fire load events, consider a different method to ensure loading, or skip synchronization.
+                            console.log(
+                              `PAGE LOG: Poor support for background images, so will wait 1 second for load.`
+                            );
+                            setTimeout(() => resolve(), 1000);
+                          } else {
+                            // Clear existing srcset to ensure image loads correctly
+                            element.srcset = "";
+                            element.src = update.newContent;
+                            element.style.objectFit = "cover";
 
-                      element.onload = () =>
-                        setTimeout(() => {
+                            element.onload = () =>
+                              setTimeout(() => {
+                                resolve();
+                              }, 1000);
+                            element.onerror = reject;
+                          }
+                        } else if (update.hideElement) {
+                          console.log(`PAGE LOG: Hiding ${update.selector}`);
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            e.style.opacity = 0;
+                            e.style.visibility = "hidden";
+                          });
                           resolve();
-                        }, 1000);
-                      element.onerror = reject;
-                    }
-                  } else if (update.hideElement) {
-                    console.log(`PAGE LOG: Hiding ${update.selector}`);
-                    const elements =
-                      document.querySelectorAll(update.selector) || [];
-                    elements.forEach((e) => {
-                      e.style.opacity = 0;
-                      e.style.visibility = "hidden";
-                    });
-                    resolve();
-                  } else if (update.deleteElement) {
-                    console.log(`PAGE LOG: Deleting ${update.selector}`);
-                    const elements =
-                      document.querySelectorAll(update.selector) || [];
-                    elements.forEach((e) => {
-                      e.style.display = "none";
-                    });
-                    resolve();
-                  } else if (update.replaceTags) {
-                    const tags = JSON.parse(update.tags);
-                    const elements =
-                      document.querySelectorAll(update.selector) || [];
-                    console.log(
-                      `PAGE LOG: Replacing ${elements.length} tag(s) with ${tags.length} new tags`
-                    );
-                    for (let i = 0; i < elements.length; i++) {
-                      const e = elements[i];
-                      // delete any extra tags that we don't have hard coded names for
-                      if (i > tags.length - 1) {
-                        e.style.display = "none";
+                        } else if (update.replaceWebsiteShortName) {
+                          console.log(
+                            `PAGE LOG: Replacing website short name with ${update.newContent}`
+                          );
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            e.innerText = update.newContent;
+                          });
+                          resolve();
+                        } else if (update.overwriteBackgroundColor) {
+                          console.log(
+                            `PAGE LOG: Replacing background colors with ${update.newContent}`
+                          );
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            e.style.backgroundColor = update.newContent;
+                          });
+                          resolve();
+                        } else if (update.overwriteColor) {
+                          console.log(
+                            `PAGE LOG: Replacing colors with ${update.newContent}`
+                          );
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            e.style.color = update.newContent;
+                          });
+                          resolve();
+                        } else if (update.replaceWebsiteName) {
+                          console.log(
+                            `PAGE LOG: Replacing website name with "${update.newContent}"`
+                          );
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            e.innerText = update.newContent;
+                          });
+                          resolve();
+                        } else if (update.replaceWebsiteNewsFromName) {
+                          const name = `News from the ${update.newContent}`;
+                          console.log(
+                            `PAGE LOG: Replacing website news from name with "${name}"`
+                          );
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            e.innerText = name;
+                          });
+                          resolve();
+                        } else if (update.rewriteClassName) {
+                          console.log(
+                            `PAGE LOG: Re-writing ${update.selector}`
+                          );
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            e.className = update.className;
+                          });
+                          resolve();
+                        } else if (update.deleteElement) {
+                          console.log(`PAGE LOG: Deleting ${update.selector}`);
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            e.remove();
+                          });
+                          resolve();
+                        } else if (update.replaceTags) {
+                          const tags = JSON.parse(update.tags);
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          console.log(
+                            `PAGE LOG: Replacing ${elements.length} tag(s) with ${tags.length} new tags`
+                          );
+                          for (let i = 0; i < elements.length; i++) {
+                            const e = elements[i];
+                            // delete any extra tags that we don't have hard coded names for
+                            if (i > tags.length - 1) {
+                              e.style.display = "none";
+                            } else {
+                              e.innerText = tags[i];
+                            }
+                          }
+                          resolve();
+                        } else if (update.applyStyles) {
+                          console.log(
+                            `PAGE LOG: Applying styles to ${update.selector}`
+                          );
+                          const elements =
+                            document.querySelectorAll(update.selector) || [];
+                          elements.forEach((e) => {
+                            for (const [key, value] of Object.entries(
+                              update.styles || {}
+                            )) {
+                              e.style.setProperty(key, value);
+                            }
+                          });
+                          resolve();
+                        } else {
+                          if (update.selectAll) {
+                            const elements =
+                              document.querySelectorAll(update.selector) || [];
+                            elements.forEach((e) => {
+                              e.innerText = update.newContent;
+                            });
+                            resolve();
+                          } else {
+                            element.innerText = update.newContent;
+                            resolve();
+                          }
+                        }
                       } else {
-                        e.innerText = tags[i];
+                        console.log(
+                          `PAGE LOG: Element not found for selector: ${update.selector}`
+                        );
+                        // resolve even if element not found to not block the Promise.all
+                        resolve();
                       }
                     }
-                    resolve();
                   } else {
-                    if (update.selectAll) {
-                      const elements =
-                        document.querySelectorAll(update.selector) || [];
-                      elements.forEach((e) => {
-                        e.innerText = update.newContent;
-                      });
-                      resolve();
-                    } else {
-                      element.innerText = update.newContent;
-                      resolve();
-                    }
+                    resolve();
                   }
-                } else {
-                  console.log(
-                    `PAGE LOG: Element not found for selector: ${update.selector}`
-                  );
-                  // resolve even if element not found to not block the Promise.all
-                  resolve();
+                } catch (error) {
+                  console.log("PAGE LOG ERROR", error.message);
                 }
-              } else {
-                resolve();
-              }
-            });
-          })
-        );
-      }, updates);
-      await page.screenshot({
-        path: `${directory}/${toSnakeCase(
-          article.title
-        )}.${SCREENSHOT_FILETYPE}`,
-        fullPage: false,
-        type: SCREENSHOT_FILETYPE,
-      });
-      if (SAVE_RAW_HTML) {
-        const html = await page.content();
-        await fs.writeFile(
-          `${htmlDirectory}/${toSnakeCase(article.title)}.html`,
-          html
-        );
+              });
+            })
+          );
+        }, updates);
+        await page.screenshot({
+          path: `${directory}/${index}.${SCREENSHOT_FILETYPE}`,
+          fullPage: false,
+          type: SCREENSHOT_FILETYPE,
+        });
+        if (SAVE_RAW_HTML) {
+          const html = await page.content();
+          await fs.writeFile(`${htmlDirectory}/${index}.html`, html);
+        }
+        index++;
       }
+      console.log("\n");
+      console.log(
+        success(
+          `Finished re-writing ${combinedArticles} article(s) for ${
+            getWebsites().length
+          } website(s).`
+        )
+      );
     }
   }
-  console.log(
-    `Finished re-writing articles for ${WEBSITES.length} website(s).`
-  );
 }
 
 async function main() {
   try {
     if (USE_PERSISTED_DATA) {
+      console.log(info("Using persisted data!"));
       const persistedData = await fs.readFile(
         ALTERED_ARTICLE_CONTENT_FILENAME,
         "utf-8"
       );
       const persistedWebsites = JSON.parse(persistedData);
       let index = 0;
+      const websites = getWebsites();
       persistedWebsites.forEach(() => {
-        persistedWebsites[index].template = WEBSITES[index].template;
+        persistedWebsites[index] = {
+          ...websites[index],
+          template: websites[index].template,
+          articles: persistedWebsites[index].articles,
+        };
         index++;
       });
-      WEBSITES = persistedWebsites;
+      setWebsites(persistedWebsites);
     }
     const puppeteer = await initPuppeteer();
     page = puppeteer.page;
@@ -459,8 +719,8 @@ async function main() {
     // Generate altered article content, which will be saved to a new json file
     // and generate screenshots for each article (VIEWPORT_WIDTH x VIEWPORT_HEIGHT)
     await rewriteArticlesUsingAlteredContent();
-  } catch (error) {
-    console.log(error.message);
+  } catch (e) {
+    console.log(error(e.message));
   } finally {
     if (browser?.close) {
       console.log("Closing browser");

@@ -1,21 +1,27 @@
-const { default: puppeteer } = require("puppeteer");
-const {
-  DEBUG,
+import puppeteer from "puppeteer";
+import {
+  HEADLESS,
   DEFAULT_PAGE_TIMEOUT,
   VIEWPORT_WIDTH,
   VIEWPORT_HEIGHT,
-} = require("./config");
+} from "./config.js";
+import chalk from "chalk";
 
 async function initPuppeteer() {
   const browser = await puppeteer.launch({
-    headless: !DEBUG,
+    headless: HEADLESS,
     args: ["--mute-audio"],
+    protocolTimeout: 180_000,
   });
   const page = await browser.newPage();
   page.setDefaultNavigationTimeout(DEFAULT_PAGE_TIMEOUT);
   page.on("console", (message) => {
     if (message.text().includes("PAGE LOG")) {
-      console.log(message.text());
+      if (message.text().toUpperCase().includes("ERROR")) {
+        console.log(chalk.bold.red(message.text().replace("PAGE LOG: ", "")));
+      } else {
+        console.log(chalk.bold.blue(message.text().replace("PAGE LOG: ", "")));
+      }
     }
   });
   await page.setViewport({
@@ -25,6 +31,4 @@ async function initPuppeteer() {
   return { page, browser };
 }
 
-module.exports = {
-  initPuppeteer,
-};
+export { initPuppeteer };

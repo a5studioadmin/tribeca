@@ -1,19 +1,24 @@
 {
   "name": "tribeca",
+  "type": "module",
   "version": "1.0.0",
-  "main": "index.js",
+  "exports": "./index.js",
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js",
     "debug": "node --inspect-brk index.js"
   },
   "dependencies": {
-    "ollama": "^0.5.0",
-    "puppeteer": "^22.7.1"
+    "chalk": "5.3.0",
+    "ollama": "0.5.1",
+    "puppeteer": "22.0.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.1.1",
-    "eslint": "^9.1.1",
-    "globals": "^15.1.0"
+    "@eslint/js": "9.1.1",
+    "eslint": "9.1.1",
+    "globals": "15.1.0"
   }
 }
