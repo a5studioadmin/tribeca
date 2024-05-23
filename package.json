@@ -14,7 +14,8 @@
   "dependencies": {
     "chalk": "5.3.0",
     "ollama": "0.5.1",
-    "puppeteer": "22.0.0"
+    "puppeteer": "22.0.0",
+    "short-uuid": "^5.2.0"
   },
   "devDependencies": {
     "@eslint/js": "9.1.1",

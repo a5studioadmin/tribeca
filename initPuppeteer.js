@@ -7,6 +7,16 @@ import {
 } from "./config.js";
 import chalk from "chalk";
 
+function handleBrowserMessage(message) {
+  if (message.text().includes("PAGE LOG")) {
+    if (message.text().toUpperCase().includes("ERROR")) {
+      console.log(chalk.bold.red(message.text().replace("PAGE LOG: ", "")));
+    } else {
+      console.log(chalk.bold.blue(message.text().replace("PAGE LOG: ", "")));
+    }
+  }
+}
+
 async function initPuppeteer() {
   const browser = await puppeteer.launch({
     headless: HEADLESS,
@@ -15,15 +25,7 @@ async function initPuppeteer() {
   });
   const page = await browser.newPage();
   page.setDefaultNavigationTimeout(DEFAULT_PAGE_TIMEOUT);
-  page.on("console", (message) => {
-    if (message.text().includes("PAGE LOG")) {
-      if (message.text().toUpperCase().includes("ERROR")) {
-        console.log(chalk.bold.red(message.text().replace("PAGE LOG: ", "")));
-      } else {
-        console.log(chalk.bold.blue(message.text().replace("PAGE LOG: ", "")));
-      }
-    }
-  });
+  page.on("console", handleBrowserMessage);
   await page.setViewport({
     width: VIEWPORT_WIDTH,
     height: VIEWPORT_HEIGHT,
@@ -31,4 +33,4 @@ async function initPuppeteer() {
   return { page, browser };
 }
 
-export { initPuppeteer };
+export { initPuppeteer, handleBrowserMessage };

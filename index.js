@@ -1,15 +1,14 @@
 /* eslint-disable no-async-promise-executor */
 import { promises as fs } from "fs";
 import {
-  removeSpecialCharacters,
   getFormattedDate,
-  splitTitleAndContent,
   generateRandomRecentDate,
   mixArticles,
-  getNationalNewsArticles,
+  getNationalNewsArticlesForPerspective,
   generatePrompt,
+  transformLLMOutput,
 } from "./helpers.js";
-import { initPuppeteer } from "./initPuppeteer.js";
+import { handleBrowserMessage, initPuppeteer } from "./initPuppeteer.js";
 import { initOllama } from "./initOllama.js";
 import {
   SCREENSHOT_FILETYPE,
@@ -24,15 +23,20 @@ import {
   VIEWPORT_HEIGHT,
   getWebsites,
   setWebsites,
-  REWRITE_MAX_AMOUNT_OF_ARTICLES,
+  WRITER_PERSPECTIVE_DEMOCRAT,
+  WRITER_PERSPECTIVE_REPUBLICAN,
+  WRITER_PERSPECTIVE_NEUTRAL,
 } from "./config.js";
 import authors from "./authors.js";
 import chalk from "chalk";
+import shortUUID from "short-uuid";
 
-const error = chalk.bold.red;
+const ALLOW_ERROR_LOGGING = false;
+
 const info = chalk.bold.blue;
-const warning = chalk.hex("#FFA500");
 const success = chalk.bold.green;
+const warning = chalk.hex("#FFA500");
+const error = ALLOW_ERROR_LOGGING ? chalk.bold.red : warning;
 
 let page, browser, ollama;
 let totalLocalArticlesFound = 0;
@@ -54,7 +58,7 @@ async function fetchArticles(website) {
   let articleLinks = [];
   const articleLinksMap = {};
   console.log("\n");
-  console.log(info(`Scraping ${baseUrl} for articles`));
+  console.log(info(`Scraping ${baseUrl} for article content`));
   try {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     do {
@@ -82,13 +86,13 @@ async function fetchArticles(website) {
       ) {
         console.log(
           success(
-            "Finish scraping because after pagination, no new articles were found."
+            "Finished scraping because after pagination, no new articles were found."
           )
         );
         break;
       } else if (newCount.length >= maxNumberOfArticles) {
         console.log(
-          `Finish scraping because ${newCount.length} article(s) were scraped, which is equal or greater to the max number of articles (${maxNumberOfArticles})`
+          `Finished scraping because ${newCount.length} article(s) were scraped, which is equal or greater to the max number of articles (${maxNumberOfArticles})`
         );
         break;
       } else {
@@ -119,7 +123,7 @@ async function fetchArticles(website) {
                 )
               );
             });
-          console.log(`Scraping ${page.url()} for articles`);
+          console.log(`Scraping ${page.url()} for article content`);
         }
       }
     } while (Object.keys(articleLinksMap)?.length <= maxNumberOfArticles);
@@ -129,12 +133,12 @@ async function fetchArticles(website) {
       articleLinks.push(articleLinksMap[link]);
     }
     console.log(
-      `Scraped ${articleLinks.length} article(s) from ${baseUrl}, but limiting amount to ${maxNumberOfArticles}`
+      `Scraped ${articleLinks.length} article(s) from ${baseUrl} but limiting amount to ${maxNumberOfArticles}`
     );
     articleLinks = articleLinks.slice(0, maxNumberOfArticles);
 
     console.log(
-      `Fetching content for ${articleLinks.length} ${
+      `Scraping content from ${articleLinks.length} ${
         nationalNewsSource ? "national news" : "local news"
       } article(s)`
     );
@@ -143,15 +147,7 @@ async function fetchArticles(website) {
         await page.close();
         page = await browser.newPage();
         page.setDefaultNavigationTimeout(DEFAULT_PAGE_TIMEOUT);
-        page.on("console", (message) => {
-          if (message.text().includes("PAGE LOG")) {
-            if (message.text().toUpperCase().includes("ERROR")) {
-              console.log(error(message.text()));
-            } else {
-              console.log(info(message.text()));
-            }
-          }
-        });
+        page.on("console", handleBrowserMessage);
         await page.setViewport({
           width: VIEWPORT_WIDTH,
           height: VIEWPORT_HEIGHT,
@@ -220,7 +216,7 @@ async function fetchArticles(website) {
           articleContent.title &&
           articleContent.content
         ) {
-          console.log("Fetched content for", articleContent.href);
+          console.log("Scraped content from", articleContent.href);
           articles.push({
             ...articleContent,
             nationalNews: nationalNewsSource,
@@ -250,7 +246,7 @@ async function fetchArticles(website) {
         console.log(error(`Unable to fetch ${link.href}: ${e.message}`));
       }
     }
-    console.log(success(`Fetched content for ${articles.length} article(s)!`));
+    console.log(success(`Scraped content from ${articles.length} article(s)!`));
   } catch (e) {
     console.log(error(`Unable to fetch ${baseUrl}: ${e.message}`));
   }
@@ -280,29 +276,83 @@ async function fetchAllArticles() {
     JSON.stringify(getWebsites()),
     "utf8"
   );
+  await page.close();
 }
 
 async function generateAlteredArticleContent() {
   console.log("\n");
   console.log(
-    info("Generating perspective for all article(s) based on the system prompt")
+    info(
+      "Generating perspective for all article(s) based on the district's supplied writer personality"
+    )
   );
   for (const website of getWebsites()) {
-    for (const article of website.articles) {
-      console.log(`Generating perspective for ${article.href}`);
-      const response = await ollama.chat({
-        model: OLLAMA_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: generatePrompt(website.personality, article.content),
-          },
-        ],
-      });
-      const { title, content } = splitTitleAndContent(response.message.content);
-      article.title = removeSpecialCharacters(title);
-      article.content = content;
-      console.log(article);
+    if (website.nationalNewsSource) {
+      const middleIndex = Math.ceil(website.articles.length / 2);
+      const firstHalf = website.articles.slice(0, middleIndex);
+      const secondHalf = website.articles.slice(middleIndex);
+      for (const article of firstHalf) {
+        console.log(
+          `Generating left-leaning national news perspective for ${article.href}`
+        );
+        const response = await ollama.chat({
+          model: OLLAMA_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: generatePrompt(
+                WRITER_PERSPECTIVE_DEMOCRAT,
+                article.content
+              ),
+            },
+          ],
+        });
+        const { title, content } = transformLLMOutput(response.message.content);
+        article.title = title;
+        article.content = content;
+        article.perspective = WRITER_PERSPECTIVE_DEMOCRAT;
+      }
+      for (const article of secondHalf) {
+        console.log(
+          `Generating right-leaning national news perspective for ${article.href}`
+        );
+        const response = await ollama.chat({
+          model: OLLAMA_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: generatePrompt(
+                WRITER_PERSPECTIVE_REPUBLICAN,
+                article.content
+              ),
+            },
+          ],
+        });
+        const { title, content } = transformLLMOutput(response.message.content);
+        article.title = title;
+        article.content = content;
+        article.perspective = WRITER_PERSPECTIVE_REPUBLICAN;
+      }
+    } else {
+      for (const article of website.articles) {
+        console.log(`Generating neutral perspective for ${article.href}`);
+        const response = await ollama.chat({
+          model: OLLAMA_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: generatePrompt(
+                WRITER_PERSPECTIVE_NEUTRAL,
+                article.content
+              ),
+            },
+          ],
+        });
+        const { title, content } = transformLLMOutput(response.message.content);
+        article.title = title;
+        article.content = content;
+        article.perspective = WRITER_PERSPECTIVE_NEUTRAL;
+      }
     }
   }
   await fs.writeFile(
@@ -322,7 +372,15 @@ async function generateAlteredArticleContent() {
 async function rewriteArticlesUsingAlteredContent() {
   console.log("\n");
   console.log(info("Re-writing article(s) using altered content"));
+  page = await browser.newPage();
+  page.setDefaultNavigationTimeout(DEFAULT_PAGE_TIMEOUT);
+  page.on("console", handleBrowserMessage);
+  await page.setViewport({
+    width: VIEWPORT_WIDTH,
+    height: VIEWPORT_HEIGHT,
+  });
   const formattedDate = getFormattedDate();
+  let totalNumberOfRewrittenArticles = 0;
   for (const website of getWebsites()) {
     if (website.nationalNewsSource) {
       console.log(
@@ -362,11 +420,10 @@ async function rewriteArticlesUsingAlteredContent() {
       }
       const combinedArticles = mixArticles(
         website.articles,
-        getNationalNewsArticles(),
-        REWRITE_MAX_AMOUNT_OF_ARTICLES
+        getNationalNewsArticlesForPerspective(website.perspective)
       );
-      let index = 1;
       for (const article of combinedArticles) {
+        const prefix = shortUUID.generate();
         console.log("\n");
         console.log(`Re-writing ${article.href}`);
         // some pages have an image fade in effect that we need to wait for
@@ -659,27 +716,42 @@ async function rewriteArticlesUsingAlteredContent() {
             })
           );
         }, updates);
+        let perspective = "neutral";
+        if (article.perspective === WRITER_PERSPECTIVE_REPUBLICAN) {
+          perspective = "republican";
+        } else if (article.perspective === WRITER_PERSPECTIVE_DEMOCRAT) {
+          perspective = "democrat";
+        }
         await page.screenshot({
-          path: `${directory}/${index}.${SCREENSHOT_FILETYPE}`,
+          path: `${directory}/${prefix}_${perspective}.${SCREENSHOT_FILETYPE}`,
           fullPage: false,
           type: SCREENSHOT_FILETYPE,
         });
         if (SAVE_RAW_HTML) {
           const html = await page.content();
-          await fs.writeFile(`${htmlDirectory}/${index}.html`, html);
+          await fs.writeFile(
+            `${htmlDirectory}/${prefix}_${perspective}.html`,
+            html
+          );
         }
-        index++;
       }
       console.log("\n");
       console.log(
         success(
-          `Finished re-writing ${combinedArticles} article(s) for ${
-            getWebsites().length
-          } website(s).`
+          `Finished re-writing ${combinedArticles.length} article(s) for ${website.websiteName}.`
         )
       );
+      totalNumberOfRewrittenArticles += combinedArticles.length;
     }
   }
+  console.log("\n");
+  console.log(
+    success(
+      `Finished re-writing ${totalNumberOfRewrittenArticles} article(s) for ${
+        getWebsites(false).length
+      } website(s).`
+    )
+  );
 }
 
 async function main() {

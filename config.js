@@ -3,27 +3,26 @@ const VIEWPORT_HEIGHT = 1440 * 1.3;
 const WEBSITE_CONTENT_MAX_WIDTH = 1300;
 const SCREENSHOT_FILETYPE = "png";
 const HEADLINE_MAX_CHARACTERS = 75;
-const ALTERED_CONTENT_MAX_PARAGRAPHS = 12;
+const ALTERED_CONTENT_MIN_PARAGRAPHS = 12;
 const ORIGINAL_ARTICLE_CONTENT_FILENAME = "./data/articles_original.json";
 const ALTERED_ARTICLE_CONTENT_FILENAME = "./data/articles_altered.json";
 const DEFAULT_PAGE_TIMEOUT = 15 * 1000;
 const NUMBER_OF_ARTICLES_PER_SOURCE = 100;
-const REWRITE_MAX_AMOUNT_OF_ARTICLES = 10;
-const SAVE_RAW_HTML = true;
+const SAVE_RAW_HTML = false;
+// headless should be turned off because of "protocol timeout" errors
 const HEADLESS = false;
-const LIMIT_WEBSITES = false;
-const USE_PERSISTED_DATA = true;
+const USE_PERSISTED_DATA = false;
 
 const TAGS = ["HOME", "WEATHER", "SPORTS", "OPINIONS", "WATCH", "OBITUARIES"];
 
 // Additional model configuration options
 // https://github.com/ollama/ollama/blob/main/docs/modelfile.md#valid-parameters-and-values
 
-const WRITER_PERSONALITY_REPUBLICAN =
+const WRITER_PERSPECTIVE_REPUBLICAN =
   "You are a hardcore, right leaning republican that tries to advance their agenda through their news reporting";
-const WRITER_PERSONALITY_DEMOCRAT =
+const WRITER_PERSPECTIVE_DEMOCRAT =
   "You are a hardcore, left leaning democrat that tries to advance their agenda through their news reporting";
-const WRITER_PERSONALITY_NEUTRAL =
+const WRITER_PERSPECTIVE_NEUTRAL =
   "You are a news reporter with politically neutral views";
 
 const OLLAMA_MODEL = "llama3:latest";
@@ -232,14 +231,13 @@ let WEBSITES = [
     websiteShortName: "WHNY",
     state: "New York",
     nationalNewsSource: true,
-    template: TEMPLATES[0],
-    personality: WRITER_PERSONALITY_NEUTRAL,
     basePageAnchorSelector: "a.td-image-wrap",
     basePagePaginationSelector: "i.page-nav-icon.td-icon-menu-right",
     detailPageTitleSelector: "h1.tdb-title-text",
     detailPageImageSelector: "img.entry-thumb.td-animation-stack-type0-2",
     detailPageContentSelector: "div.td_block_wrap.tdb_single_content",
     primaryBrandColor: "#0F5FEB",
+    maxNumberOfArticles: NUMBER_OF_ARTICLES_PER_SOURCE * 2,
     articles: [],
   },
   {
@@ -248,7 +246,7 @@ let WEBSITES = [
     websiteShortName: "WHAT",
     state: "Georgia",
     district: "GA-06",
-    personality: WRITER_PERSONALITY_REPUBLICAN,
+    perspective: WRITER_PERSPECTIVE_REPUBLICAN,
     template: TEMPLATES[0],
     basePageAnchorSelector: "h4.headline > a.text-reset",
     basePagePaginationSelector: "div.load-more",
@@ -265,7 +263,7 @@ let WEBSITES = [
     websiteShortName: "WHPH",
     state: "Pennsylvania",
     district: "PA-01",
-    personality: WRITER_PERSONALITY_REPUBLICAN,
+    perspective: WRITER_PERSPECTIVE_REPUBLICAN,
     template: TEMPLATES[1],
     basePageAnchorSelector: "a.story-card__title-link",
     basePagePaginationSelector:
@@ -286,7 +284,7 @@ let WEBSITES = [
     websiteShortName: "WHAZ",
     state: "Arizona",
     district: "AZ-01",
-    personality: WRITER_PERSONALITY_REPUBLICAN,
+    perspective: WRITER_PERSPECTIVE_REPUBLICAN,
     template: TEMPLATES[2],
     basePageAnchorSelector: "h4.headline > a.text-reset",
     basePagePaginationSelector: "div.load-more",
@@ -302,7 +300,7 @@ let WEBSITES = [
     websiteShortName: "WHLN",
     state: "Michigan",
     district: "MI-08",
-    personality: WRITER_PERSONALITY_REPUBLICAN,
+    perspective: WRITER_PERSPECTIVE_REPUBLICAN,
     template: TEMPLATES[3],
     basePageAnchorSelector: "h4.headline > a.text-reset",
     basePagePaginationSelector: "div.load-more",
@@ -318,7 +316,7 @@ let WEBSITES = [
     websiteShortName: "WHVG",
     state: "Vegas",
     district: "NV-03, NV-04",
-    personality: WRITER_PERSONALITY_DEMOCRAT,
+    perspective: WRITER_PERSPECTIVE_DEMOCRAT,
     template: TEMPLATES[0],
     basePageAnchorSelector: "h4.headline > a.text-reset",
     basePagePaginationSelector: "div.load-more",
@@ -335,7 +333,7 @@ let WEBSITES = [
     newsFrom: "Bangor Maine",
     state: "Maine",
     district: "ME-02",
-    personality: WRITER_PERSONALITY_DEMOCRAT,
+    perspective: WRITER_PERSPECTIVE_DEMOCRAT,
     template: TEMPLATES[1],
     basePageAnchorSelector: "h4.headline > a.text-reset",
     basePagePaginationSelector: "div.load-more",
@@ -351,7 +349,7 @@ let WEBSITES = [
     websiteShortName: "WHFL",
     state: "Florida",
     district: "FL-27",
-    personality: WRITER_PERSONALITY_DEMOCRAT,
+    perspective: WRITER_PERSPECTIVE_DEMOCRAT,
     template: TEMPLATES[2],
     basePageAnchorSelector: "h4.headline > a.text-reset",
     basePagePaginationSelector: "div.load-more",
@@ -368,7 +366,7 @@ let WEBSITES = [
     newsFrom: "La Crosse, Eau Claire, and Platteville",
     state: "Wisconsin",
     district: "WI-03",
-    personality: WRITER_PERSONALITY_DEMOCRAT,
+    perspective: WRITER_PERSPECTIVE_DEMOCRAT,
     template: TEMPLATES[3],
     basePageAnchorSelector: "h4.headline > a.text-reset",
     basePagePaginationSelector: "div.load-more",
@@ -379,11 +377,7 @@ let WEBSITES = [
     articles: [],
   },
 ]
-  .map((site, index) => {
-    // for debug purposes
-    if (LIMIT_WEBSITES && index > 0) {
-      return null;
-    }
+  .map((site) => {
     // if a specific website needs to scrap more articles than another
     // (if scraping is more error prone), maxNumberOfArticles can be defined
     // in the website config. otherwise, NUMBER_OF_ARTICLES_PER_SOURCE will be the default
@@ -398,8 +392,14 @@ function setWebsites(persistedData) {
   WEBSITES = persistedData;
 }
 
-function getWebsites() {
-  return WEBSITES;
+function getWebsites(includeNationalNews = true) {
+  if (includeNationalNews) {
+    return WEBSITES;
+  } else {
+    return WEBSITES.filter((website) => {
+      return !website.nationalNewsSource;
+    });
+  }
 }
 
 export {
@@ -407,7 +407,7 @@ export {
   VIEWPORT_HEIGHT,
   SCREENSHOT_FILETYPE,
   HEADLINE_MAX_CHARACTERS,
-  ALTERED_CONTENT_MAX_PARAGRAPHS,
+  ALTERED_CONTENT_MIN_PARAGRAPHS,
   ORIGINAL_ARTICLE_CONTENT_FILENAME,
   ALTERED_ARTICLE_CONTENT_FILENAME,
   OLLAMA_MODEL,
@@ -417,8 +417,10 @@ export {
   SAVE_RAW_HTML,
   HEADLESS,
   USE_PERSISTED_DATA,
-  REWRITE_MAX_AMOUNT_OF_ARTICLES,
   TAGS,
+  WRITER_PERSPECTIVE_REPUBLICAN,
+  WRITER_PERSPECTIVE_DEMOCRAT,
+  WRITER_PERSPECTIVE_NEUTRAL,
   getWebsites,
   setWebsites,
 };

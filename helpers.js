@@ -1,5 +1,5 @@
 import {
-  ALTERED_CONTENT_MAX_PARAGRAPHS,
+  ALTERED_CONTENT_MIN_PARAGRAPHS,
   HEADLINE_MAX_CHARACTERS,
   getWebsites,
 } from "./config.js";
@@ -93,24 +93,32 @@ function mixArticles(localNews = [], nationalNews = [], limitOutput) {
   }
 }
 
-function getNationalNewsArticles() {
-  const nationalNewsArticles = [];
-  for (const website in getWebsites()) {
-    if (website.nationalNewsSource) {
-      nationalNewsArticles.concat(website.articles || []);
-    }
-  }
-  return nationalNewsArticles;
+function transformLLMOutput(article) {
+  const { title, content } = splitTitleAndContent(article);
+  const sanitizedTitle = removeSpecialCharacters(title);
+  return {
+    title: sanitizedTitle,
+    content,
+  };
+}
+
+function getNationalNewsArticlesForPerspective(perspective) {
+  const nationalNewsWebsite = getWebsites().find((website) => {
+    return (website.nationalNewsSource = true);
+  });
+  return nationalNewsWebsite.articles.filter((article) => {
+    return article.perspective === perspective;
+  });
 }
 
 function generatePrompt(perspective, content) {
   return `
   You will be supplied the raw text content of a news article at the end of this prompt, and you are to re-write the article from the perspective of ${perspective}. There are several requirements in addition to re-writing the content, which are described below.
 
-  1. The article content you generate should be at least ${ALTERED_CONTENT_MAX_PARAGRAPHS} paragraphs in length.
+  1. The article content you generate should be at least ${ALTERED_CONTENT_MIN_PARAGRAPHS} paragraphs in length.
   2. The article content you generate should not read as op-eds, and should read as a matter of fact.
   3. In your output, the first sentence should be a short news headline that summarizes the article (from the perspective of your beliefs), and it should be a max character length of ${HEADLINE_MAX_CHARACTERS}. It should also not contain any asterisks or quotations.
-  4. Your output should be response only, and should only contain the content of the newly generated article you produced and the headline as the article's first sentence. In other words, the first sentence of your output should be the article headline, followed by at least ${ALTERED_CONTENT_MAX_PARAGRAPHS} paragraphs of re-written article content. For example, your response should not include "Here is a rewritten version of the article" or similar. It should only be a title that summarizes the article from your perspective, followed by the article content you generated.
+  4. Your output should be response only, and should only contain the content of the newly generated article you produced and the headline as the article's first sentence. In other words, the first sentence of your output should be the article headline, followed by at least ${ALTERED_CONTENT_MIN_PARAGRAPHS} paragraphs of re-written article content. For example, your response should not include "Here is a rewritten version of the article" or similar. It should only be a title that summarizes the article from your perspective, followed by the article content you generated.
 
   The article content that you should re-write is below:
   
@@ -122,8 +130,9 @@ export {
   generatePrompt,
   mixArticles,
   removeSpecialCharacters,
-  getNationalNewsArticles,
+  getNationalNewsArticlesForPerspective,
   getFormattedDate,
   splitTitleAndContent,
   generateRandomRecentDate,
+  transformLLMOutput,
 };

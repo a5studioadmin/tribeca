@@ -44,14 +44,14 @@ npm install
 
 ## Usage
 
-1. Optionally modify the various writer personalities in defined as `WRITER_PERSONALITY` in config.js.
-2. If additional websites need to be scraped, they can be added in the `WEBSITES` array in config.js. You need to manually identify the main website's anchor links that link to article detail pages, (optionally) any identifier for pagination button(s), and the article detail page title and content identifiers.
-3. Optionally modify screenshot parameters, like `VIEWPORT_WIDTH`, `VIEWPORT_HEIGHT`, and `SCREENSHOT_FILETYPE` in config.js.
-4. Optionally change how many articles are produced per website using `maxNumberOfArticles` for each website in config.js.
-5. Run the program:
+1. Various configuration options are exposed in config.js (like like `VIEWPORT_WIDTH`, `VIEWPORT_HEIGHT`, and `SCREENSHOT_FILETYPE`)
+2. If additional websites need to be scraped, they can be added in the `WEBSITES` array in config.js. You need to manually identify the main website's anchor links that link to article detail pages, (optionally) any identifier for pagination button(s), article detail page title and content identifiers, and other identifiers seen in the existing `WEBSITES` array.
+3. Optionally change how many articles are produced per website using `NUMBER_OF_ARTICLES_PER_SOURCE` in config.js.
+4. Run the program:
 
 ```sh
 npm start
 ```
 
-6. View the outputting screenshots in the screenshots directory.
+6. View the resulting screenshots in the screenshots directory, which are ordered by the timestamp they were run.
+7. If you have generated the article content before and just want to re-generate the screenshots (helpful for debugging this part of the flow), you can set `USE_PERSISTED_DATA` to true.
